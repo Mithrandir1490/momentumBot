@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from scipy.stats import linregress
-from datetime import datetime, timezone
+from datetime import datetime
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -17,14 +17,20 @@ st.title("🚀 Momentum Strategy Bot v2.0 — Motor de Inercia Logarítmica")
 st.caption("Ecosistema Cuantitativo 'The One Ring' | Optimizado para Asignación de Fracciones de Alta Velocidad")
 st.markdown("---")
 
+# RESTRICCIÓN DE PISO MÍNIMO INSTITUCIONAL POR OPERACIÓN
+MIN_USD_PER_ORDER = 10.0
+
 # BARRA LATERAL DE PARAMETRIZACIÓN
 st.sidebar.header("⚙️ Parámetros de Control Táctico")
-capital_total = st.sidebar.number_input("Capital Disponible para Despliegue (USD)", value=50000.0, step=1000.0)
+
+# MEJORA ACCESIBLE: El presupuesto de despliegue queda abierto para los socios (Default: Santiago's allocation)
+presupuesto_diario_bot3 = st.sidebar.number_input("Presupuesto de Despliegue Hoy (USD)", value=139.82, step=50.0)
 st.sidebar.markdown("---")
+
 stop_loss_pct = st.sidebar.slider("Stop Loss Máximo Permitido (%)", 1, 10, 4) / 100
 take_profit_pct = st.sidebar.slider("Take Profit Objetivo (%)", 1, 20, 8) / 100
 
-# MEJORA DE CAPTURA: Umbral por defecto flexibilizado a 0.65 para atrapar momentum volátil (AMD, ARM, Proxies)
+# Umbral por defecto flexibilizado a 0.65 para atrapar momentum volátil (AMD, ARM, Proxies)
 umbral_r2_compra = st.sidebar.slider("Umbral R2 Mínimo de Calidad Lineal", 0.4, 0.9, 0.65)
 
 # UNIVERSO INTEGRADO Y EXPANDIDO DE ALTA INERCIA (115 TICKERS INSTITUCIONALES)
@@ -76,7 +82,7 @@ tab1, tab2 = st.tabs(["🔍 Escáner de Inercia Dinámica", "📊 Monitor de Por
 
 with tab1:
     if st.button("🚀 Iniciar Escaneo de Cobertura Global"):
-        with st.spinner(f"Triturando curvas logarítmicas en {len(TICKERS)} activos activos..."):
+        with st.spinner(f"Triturando curvas logarítmicas en {len(TICKERS)} activos..."):
             resultados = []
             for t in TICKERS:
                 res = analizar_ticker(t)
@@ -88,20 +94,47 @@ with tab1:
                 # --- SECCIÓN 1: SUGERENCIAS DE COMPRA AUTOMATIZADAS ---
                 st.subheader("✅ Señales de Entrada de Alta Inercia (Filtro R² Activo)")
                 df_gan = df[(df['R2'] >= umbral_r2_compra) & (df['Sobre_MA20'] == True)]
+                n_gan = len(df_gan)
                 
-                if not df_gan.empty:
+                if n_gan > 0:
                     # Selección de las 5 mejores locomotoras del mercado por velocidad
                     df_gan = df_gan.sort_values(by="Momentum_Anual", ascending=False).head(5)
-                    # Gestión de capital proporcional normalizado a la calidad lineal
-                    df_gan['Inversión_USD'] = (df_gan['R2'] / df_gan['R2'].sum()) * capital_total
+                    n_final_buys = len(df_gan)
+                    
+                    # 1. Asignación proporcional base según el Coeficiente R2
+                    pesos_base = df_gan['R2'] / df_gan['R2'].sum()
+                    df_gan['Inversión_USD'] = pesos_base * presupuesto_diario_bot3
+                    
+                    # 2. Algoritmo de Optimización con Restricción de Piso de $10 USD
+                    if presupuesto_diario_bot3 >= (n_final_buys * MIN_USD_PER_ORDER):
+                        monto_insuficiente = True
+                        while monto_insuficiente:
+                            bajo_piso = df_gan['Inversión_USD'] < MIN_USD_PER_ORDER
+                            
+                            if bajo_piso.any():
+                                df_gan.loc[bajo_piso, 'Inversión_USD'] = MIN_USD_PER_ORDER
+                                
+                                fondos_fijos = df_gan[df_gan['Inversión_USD'] == MIN_USD_PER_ORDER]['Inversión_USD'].sum()
+                                presupuesto_restante = presupuesto_diario_bot3 - fondos_fijos
+                                
+                                sobre_piso = df_gan['Inversión_USD'] > MIN_USD_PER_ORDER
+                                if sobre_piso.any() and presupuesto_restante > 0:
+                                    df_gan.loc[sobre_piso, 'Inversión_USD'] = (df_gan.loc[sobre_piso, 'R2'] / df_gan.loc[sobre_piso, 'R2'].sum()) * presupuesto_restante
+                                else:
+                                    monto_insuficiente = False
+                            else:
+                                monto_insuficiente = False
+                    
+                    # Recalcular columnas de salida con presupuestos normalizados
+                    df_gan['Porcentaje del Presupuesto'] = (df_gan['Inversión_USD'] / presupuesto_diario_bot3) * 100
                     df_gan['Fracciones a Comprar'] = round(df_gan['Inversión_USD'] / df_gan['Precio'], 4)
                     
-                    st.success("🎯 **ASIGNACIÓN PRESUPUESTAL COMPLETADA:** Posturas optimizadas proporcionalmente según el coeficiente de calidad R².")
-                    st.dataframe(df_gan[['Ticker', 'Momentum_Anual', 'R2', 'Inversión_USD', 'Fracciones a Comprar']]
-                                 .style.format({"Momentum_Anual": "{:.2%}", "R2": "{:.3f}", "Inversión_USD": "${:,.2f}"}),
+                    st.success(f"🎯 **ASIGNACIÓN PRESUPUESTAL COMPLETADA:** Distribución de los ${presupuesto_diario_bot3:.2f} USD ejecutada. Restricción de $10.00 USD mínimos por orden activa.")
+                    st.dataframe(df_gan[['Ticker', 'Momentum_Anual', 'R2', 'Porcentaje del Presupuesto', 'Inversión_USD', 'Fracciones a Comprar']]
+                                 .style.format({"Momentum_Anual": "{:.2%}", "R2": "{:.3f}", "Porcentaje del Presupuesto": "{:.1f}%", "Inversión_USD": "${:,.2f}"}),
                                  use_container_width=True, hide_index=True)
                 else:
-                    st.info("El mercado cotiza en rango lateral o distribución. No hay activos que cumplan el filtro de inercia limpia actual.")
+                    st.info(f"El mercado cotiza en rango lateral o distribución. No hay aceleración limpia. El presupuesto diario de **${presupuesto_diario_bot3:.2f} USD** se retiene líquido en tesorería.")
                 
                 # --- SECCIÓN 2: WATCHLIST GLOBAL DE VELOCIDAD ---
                 st.markdown("---")
@@ -118,7 +151,7 @@ with tab2:
         st.session_state.mis_trades = pd.DataFrame(columns=["Ticker", "Cantidad_Acciones", "Precio_Entrada"])
         st.session_state.mis_trades = st.session_state.mis_trades.astype({"Cantidad_Acciones": float, "Precio_Entrada": float})
 
-    st.info("💡 **Guía de Control:** Registra tus fracciones vivas. Al presionar 'Actualizar Estatus', el sistema auditará las reglas de salida paramétricas de forma automática.")
+    st.info("💡 **Guía de Control:** Registra tus fracciones vivas. Al presionar 'Actualizar Estatus', el sistema auditará las reglas de salida de forma automática.")
     
     edited_df = st.data_editor(st.session_state.mis_trades, num_rows="dynamic", use_container_width=True)
     st.session_state.mis_trades = edited_df
@@ -147,7 +180,7 @@ with tab2:
                 gan_pct = (p_act - p_ent) / p_ent
                 gan_usd = (p_act - p_ent) * cant
                 
-                # PROTOCOLO DE SALIDA TOTALMENTE REFACTORIZADO (INYECCIÓN DE REGLA ACELERADA)
+                # PROTOCOLO DE SALIDA CON REGRESIÓN DE INERCIA Y TAKE PROFIT PARABÓLICO ACELERADO
                 if gan_pct >= take_profit_pct:
                     estado = "⚡ LIQUIDACIÓN INMEDIATA (TAKE PROFIT ACELERADO)"
                 elif gan_pct <= -stop_loss_pct: 
